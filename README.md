@@ -6,4 +6,5 @@
 
 ## patch List
 
-1. [IMF: Inferred Model-based Fuzzer](IMF/README.md)
+1. [IMF: Inferred Model-based Fuzzer](IMF/)
+2. [SyzGen: Automated Generation of Syscall Specification of Closed-Source macOS Drivers](SyzGen/)

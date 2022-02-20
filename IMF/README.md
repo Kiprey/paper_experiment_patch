@@ -11,7 +11,7 @@ https://github.com/SoftSec-KAIST/IMF
 
 为了防止 ApiFuzz 报告错误并让 API Log 更好地显示值字符串，我将所有非字母和非数字字符转义为 '\xXX' 的形式。
 
-而且效果很好。
+而且效果看上去还不错：
 
 ```text
 {'name':'location','value': '"\x0f\x18"','size' : 0x80,'cnt':0x1, 'data':[]}

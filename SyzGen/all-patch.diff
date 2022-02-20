@@ -1,0 +1,793 @@
+diff --git a/.gitignore b/.gitignore
+index ccf0e7c..36d429a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,6 +4,10 @@
+ angr/
+ angr-targets/
+ cle/
++go/
++gopath/
+ 
+ # python env
+ fuzz/
++go1.15.6.darwin-amd64.tar.gz
++**/.DS_Store
+\ No newline at end of file
+diff --git a/SyzGen/debug.py b/SyzGen/debug.py
+index 692803d..5e8c020 100644
+--- a/SyzGen/debug.py
++++ b/SyzGen/debug.py
+@@ -66,7 +66,7 @@ class LLDBDebugger(object):
+     
+     def get_current_thread(self):
+         # TODO: GetThreadAtIndex(3)???
+-        process = lldb.target.GetProcess()
++        process = lldb.debugger.GetSelectedTarget().GetProcess()
+         if process.GetNumThreads() > 1:
+             print("More than one thread")
+         thread = process.GetThreadAtIndex(0)
+@@ -121,7 +121,7 @@ class LLDBDebugger(object):
+     def read_memory(self, address, nbytes, **kwargs):
+         print("read memory at 0x%x with %d" % (address, nbytes))
+         error = lldb.SBError()
+-        process = lldb.target.GetProcess()
++        process = lldb.debugger.GetSelectedTarget().GetProcess()
+         content = process.ReadMemory(address, nbytes, error)
+         if error.Success():
+             return bytearray(content)
+@@ -130,7 +130,7 @@ class LLDBDebugger(object):
+     def write_memory(self, address, value, *args, **kwargs):
+         print("write memory at 0x%x" % address, value)
+         error = lldb.SBError()
+-        process = lldb.target.GetProcess()
++        process = lldb.debugger.GetSelectedTarget().GetProcess()
+         new_value = str(value)  # FIXME: pthon2 style
+         result = process.WriteMemory(address, new_value, error)
+         if not error.Success():
+@@ -187,14 +187,15 @@ class LLDBDebugger(object):
+ 
+     def find_function_addr(self, name):
+         ret = []
+-        for each in lldb.target.FindFunctions(name):
++        target = lldb.debugger.GetSelectedTarget()
++        for each in target.FindFunctions(name):
+             if not each.block.IsInlined():
+-                addr = each.symbol.addr.load_addr
++                addr = each.symbol.addr.GetLoadAddress(target)
+                 ret.append({"inlined": False, "addr": addr})
+                 # print(each.symbol.name, hex(addr))
+             else:
+                 for start, end in each.block.ranges:
+-                    ret.append({"inlined": True, "start": start.load_addr, "end": end.load_addr})
++                    ret.append({"inlined": True, "start": start.GetLoadAddress(target), "end": end.GetLoadAddress(target)})
+                     # print("[inlined]", hex(start.load_addr), hex(end.load_addr))
+         if len(ret) == 0:
+             raise Exception("Cannot find the symbol %s" % name)
+@@ -202,10 +203,10 @@ class LLDBDebugger(object):
+     
+     def find_function_name(self, addr):
+         print("find function at 0x%x" % addr)
+-        return lldb.target.ResolveLoadAddress(addr).symbol.name
++        return lldb.debugger.GetSelectedTarget().ResolveLoadAddress(addr).symbol.name
+ 
+     def find_global_variable(self, name):
+-        var = lldb.target.FindFirstGlobalVariable(name)
++        var = lldb.debugger.GetSelectedTarget().FindFirstGlobalVariable(name)
+         if var and var.value:
+             return int(var.value, 16)
+         raise Exception("Cannot find the global variable: %s" % name)
+@@ -227,7 +228,7 @@ class LLDBDebugger(object):
+             elapsed = 0
+             print("ready to check!")
+             while elapsed <= timeout:
+-                process = lldb.target.GetProcess()
++                process = lldb.debugger.GetSelectedTarget().GetProcess()
+                 if process.GetState() == lldb.eStateStopped:
+                     break
+ 
+@@ -243,7 +244,7 @@ class LLDBDebugger(object):
+                 break
+             else:
+                 print("different thread!!")
+-                lldb.target.GetProcess().Continue()
++                lldb.debugger.GetSelectedTarget().GetProcess().Continue()
+                 time.sleep(2)
+ 
+     @run_async
+@@ -255,7 +256,8 @@ class LLDBDebugger(object):
+         # TODO: Check if it was hit at desired breakpoint
+         # Make sure the process is stopped
+         # target = debugger.GetSelectedTarget()
+-        process = lldb.target.GetProcess()
++        # raise Exception
++        process = lldb.debugger.GetSelectedTarget().GetProcess()
+         if not process.IsValid():
+             print("process is invalid")
+             return False
+@@ -281,7 +283,7 @@ class LLDBDebugger(object):
+         return self.get_current_thread().GetThreadID()
+ 
+     def remove_breakpoints(self):
+-        lldb.target.DeleteAllBreakpoints()
++        lldb.debugger.GetSelectedTarget().DeleteAllBreakpoints()
+         return True
+ 
+     def set_breakpoint(self, kext, target):
+@@ -354,13 +356,14 @@ class Fuzz(LLDBCommand):
+                 break
+ 
+     def getFuncAddr(self, name):
+-        for each in lldb.target.FindFunctions(name):
++        target = lldb.debugger.GetSelectedTarget()
++        for each in target.FindFunctions(name):
+             if not each.block.IsInlined():
+-                addr = each.symbol.addr.load_addr
++                addr = each.symbol.addr.GetLoadAddress(target)
+                 print(each.symbol.name, hex(addr))
+             else:
+                 for start, end in each.block.ranges:
+-                    print("[inlined]", hex(start.load_addr), hex(end.load_addr))
++                    print("[inlined]", hex(start.GetLoadAddress(target)), hex(end.GetLoadAddress(target)))
+ 
+     def findKext(self, addr):
+         if addr.startswith("0x"):
+@@ -443,6 +446,7 @@ class Proxy(LLDBCommand):
+             self.set_breakpoint()
+         
+     def test(self):
++        kp_test()
+         self.debugger.isStop()
+ 
+     def set_breakpoint(self):
+@@ -521,12 +525,13 @@ class Proxy(LLDBCommand):
+         names = request["names"]
+         funcs = dict()
+         for name in names:
++            print("%s in find_functions" % name)
+             try:
+                 name = str(name)  # FIXME: pthon2 style
+                 ret = self.debugger.find_function_addr(name)
+                 funcs[name] = ret
+             except Exception as e:
+-                print(e)
++                print("find_functions", e)
+                 funcs[name] = []
+         return {"errcode": 0, "funcs": funcs}
+     
+@@ -565,7 +570,7 @@ class Proxy(LLDBCommand):
+         print("set target %s with 0x%x task and thread %d" % \
+             (self.target, self.task, self.threadID))
+         if self.task == 0:
+-            raise Exception("failed to get the task")
++            raise Exception("failed to get the task: " + self.target)
+         return None
+ 
+     @catch_exception
+@@ -674,6 +679,18 @@ class Proxy(LLDBCommand):
+             self.send({"errcode": 2})
+         return False
+ 
++# lldb cannot find lldb.target and lldb.thread
++# def kp_test():
++#     print("lldb.target", lldb.target)
++#     print("lldb.debugger", lldb.debugger)
++#     # print("lldb.thread", lldb.thread)
++
++# def kp_def():
++#     assert lldb.debugger
++#     lldb.target = lldb.debugger.GetSelectedTarget()
++    # lldb.thread = lldb.debugger.GetSelectedTarget().GetProcess().GetSelectedThread()
++
++
+ def __lldb_init_module(debugger, dict):
+     # Register all classes that have a register_lldb_command method
+     # for _name, cls in inspect.getmembers(sys.modules[__name__]):
+@@ -681,6 +698,8 @@ def __lldb_init_module(debugger, dict):
+     #                                                  "register_lldb_command",
+     #                                                  None)):
+     #         cls.register_lldb_command(debugger, __name__)
++    # lldb.target = lldb.debugger.GetSelectedTarget()
++    # print(lldb.target)
+     Proxy.register_lldb_command(debugger, __name__)
+     Fuzz.register_lldb_command(debugger, __name__)
+ 
+diff --git a/SyzGen/docs/run.md b/SyzGen/docs/run.md
+index f377427..c95e426 100644
+--- a/SyzGen/docs/run.md
++++ b/SyzGen/docs/run.md
+@@ -110,4 +110,23 @@ Now we can go ahead to run the final step:
+ 
+ ```
+ python main.py --infer_type --client clientName
+-```
+\ No newline at end of file
++```
++
++## Run Syzkaller
++
++
++1. 先把 kcov.kext 放入 VM /Users/test/kcov.kext
++2. 跑以下命令
++
++	> gopath/src/github.com/google/syzkaller/syz-manager/manager.go
++
++	```bash
++	cd ~/Desktop/SyzGen_setup/gopath/src/github.com/google/syzkaller
++	./bin/syz-manager -config workdir/cfg_IONetworkUserClient.json -vv 10 -bpcov -corpus -kcov ~/Desktop/vmmacos/kcov 2>&1 | tee syz-manager-output.txt
++	```
++	参数：
++	- debug: 启动调试输出，最好不要带上它，因为输出的信息非常之多
++	- vv: verbosity 额外输出参数
++	- bpcov: 启动 hook 
++	- corpus: 自动生成语料
++	- kcov: 指定 hook 所需的 /tmp/kcov
+\ No newline at end of file
+diff --git a/SyzGen/scripts/ida.py b/SyzGen/scripts/ida.py
+index 2791af3..86c67cb 100644
+--- a/SyzGen/scripts/ida.py
++++ b/SyzGen/scripts/ida.py
+@@ -5,7 +5,7 @@ import subprocess
+ import struct
+ import xml.etree.ElementTree as ET
+ 
+-IDA64 = "C:\\Program Files\\IDA 7.2\\idat64.exe"
++IDA64 = "D:\software\CrackingTools\[P.Y.G]IDA_Pro_7.5_SP3\ida64.exe"
+ BlackList = [
+     "com.apple.iokit.IOSurface",  # frequently triggerred
+     "com.apple.driver.AGPM" # unable to parse the driver
+@@ -65,7 +65,7 @@ def getInfo(path):
+ 
+ def analyze_signature(filepath):
+     d, f = os.path.split(filepath)
+-    # cc = os.path.join(d, "cc.json")
++    cc = os.path.join(d, "cc.json")
+     dst = os.path.join("workdir", "cc", f)
+     if os.path.exists(dst):
+         return
+@@ -77,7 +77,7 @@ def analyze_signature(filepath):
+     print(" ".join(cmd))
+     subprocess.run(cmd, check=True)
+     
+-    os.replace("cc.json", dst)
++    os.replace(cc, dst)
+ 
+ def run(path):
+     for name in os.listdir(path):
+diff --git a/SyzGen/scripts/ida_getcc.py b/SyzGen/scripts/ida_getcc.py
+index 31201ba..42f1a82 100644
+--- a/SyzGen/scripts/ida_getcc.py
++++ b/SyzGen/scripts/ida_getcc.py
+@@ -27,8 +27,13 @@ builtinTypeSet.add("bool")
+ builtinTypeSet.add("void")
+ builtinTypeSet.add("task")
+ 
++''' 
++    Kiprey Note: 这个脚本只能在低于 IDA7.4 的版本使用
++    将其转换成高版本的 idapy 脚本会产生错误
++'''
++
+ def log(message):
+-    print message
++    print (message)
+ 
+ def parseDemangledFuncNameToGetClassNameAndArglist(demangledFuncName, isVirtual):
+     arglist = []
+@@ -230,7 +235,7 @@ def parseModInitFuncSeg():
+         classParentMetaClass = None
+         classParentClass = None
+ 
+-        print "modInitFuncName: " + str(modInitFuncName)
++        print ("modInitFuncName: " + str(modInitFuncName))
+         for (startea, endea) in Chunks(modInitFuncEA):
+             heads = list(Heads(startea, endea))
+             for i in range(0, len(heads)):
+@@ -255,7 +260,7 @@ def parseModInitFuncSeg():
+                             classParentMetaClass =  Demangle(valueName, GetLongPrm(INF_SHORT_DN))
+                             if classParentClass:
+                                 classParentClass = classParentMetaClass[:classParentMetaClass.rfind("::")]
+-                    print className, classParentClass, classSize
++                    print (className, classParentClass, classSize)
+ 
+                     # Add class struct or fulfill existing class struct
+                     classNameToParentNameMap[className] = classParentClass
+@@ -273,7 +278,7 @@ def processFuncArgs(funcEA, isVirtual, className):
+     demangledFuncName = Demangle(funcName, GetLongPrm(INF_LONG_DN))
+     classNameInFuncName, arglist = parseDemangledFuncNameToGetClassNameAndArglist(demangledFuncName, isVirtual)            
+     if (isVirtual and classNameInFuncName == className) or ( (not isVirtual) and classNameInFuncName != None ):
+-        print "Parsing Args For Func " + funcName
++        print ("Parsing Args For Func " + funcName)
+         funcType = getFuncTypeByArgList(arglist)
+         funcTypeArgStartLoc = funcType.find("(")
+         demangledFuncNameWithoutArgs = demangledFuncName[:demangledFuncName.find("(")].strip()
+@@ -326,11 +331,11 @@ def parseGOTNames():
+ def main():
+     parseGOTNames()
+     preparePredefinedStructNameToIdMap()
+-    print "[+] Parse ModInitFunc Segments"
++    print ("[+] Parse ModInitFunc Segments")
+     parseModInitFuncSeg()
+-    print "[+] Parse VTables"
++    print ("[+] Parse VTables")
+     parseVTables()
+-    print "[+] Process All Function Args"
++    print ("[+] Process All Function Args")
+     processAllFuncArgs()
+     # hideAllStructs()
+ 
+diff --git a/SyzGen/syzgen/analysis/dispatch.py b/SyzGen/syzgen/analysis/dispatch.py
+index 8d85a1d..1a21d86 100644
+--- a/SyzGen/syzgen/analysis/dispatch.py
++++ b/SyzGen/syzgen/analysis/dispatch.py
+@@ -489,10 +489,13 @@ def _find_dispatchTable(proxy, binary, kext, service, client, no_mem=False):
+             proxy.clear()
+ 
+             # run poc
+-            if client.access:
+-                subprocess.run(["ssh", remote_addr, "~/poc"])
+-            else:
+-                subprocess.run(["ssh", remote_addr, "sudo ~/poc"])
++            try:
++                if client.access:
++                    subprocess.run(["ssh", remote_addr, "~/poc"], timeout=2)
++                else:
++                    subprocess.run(["ssh", remote_addr, "sudo ~/poc"], timeout=2)
++            except subprocess.TimeoutExpired:
++                pass
+             logger.debug("execute the PoC in guest")
+ 
+             # TODO: check inputs to make sure it is the correct one.
+diff --git a/SyzGen/syzgen/analysis/dynamic.py b/SyzGen/syzgen/analysis/dynamic.py
+index 01ae145..50429ed 100644
+--- a/SyzGen/syzgen/analysis/dynamic.py
++++ b/SyzGen/syzgen/analysis/dynamic.py
+@@ -100,7 +100,10 @@ def _find_client(proxy, binary, kext, service, root=False):
+             proxy.clear()
+ 
+             # run PoC
+-            check_effect_service(service.metaClass, runInVM=True, root=root)
++            try:
++                check_effect_service(service.metaClass, runInVM=True, root=root, timeout=2)
++            except subprocess.TimeoutExpired:
++                pass
+             # subprocess.run(["ssh", getRemoteAddr(), "~/testService %s 0" % service.metaClass])
+             logger.debug("execute testService %s 0" % service.metaClass)
+ 
+diff --git a/SyzGen/syzgen/analysis/infer.py b/SyzGen/syzgen/analysis/infer.py
+index f97b6da..02d4c2c 100644
+--- a/SyzGen/syzgen/analysis/infer.py
++++ b/SyzGen/syzgen/analysis/infer.py
+@@ -1173,8 +1173,10 @@ def execute(proxy, binary, kext, service, client, index, syscall, isConcolic, ma
+         if not os.path.exists(poc_path):
+             return EXECUTE_NONE
+ 
++        # Kiprey TODO: addEntitlement 会导致编译出的 poc 因为 entitlement 权限问题而被 kill
++        # 这时候就得不签名，但这终归不是解决方法。正确的解决方法是把待额外给的权限放到 libs/ent.plist 中
+         # Give entitlement
+-        addEntitlement(poc_path)
++        # addEntitlement(poc_path)
+ 
+         inputCnt, inputStructCnt, outputCnt, outputStructCnt = -1, -1, -1, -1
+         for line in ret.stderr.split(b'\n'):
+@@ -1205,8 +1207,11 @@ def execute(proxy, binary, kext, service, client, index, syscall, isConcolic, ma
+     try:
+         remote_addr = getRemoteAddr()
+         if not manual:
+-            subprocess.run(["ssh", remote_addr, "sudo dtrace -w -n \"BEGIN { breakpoint(); }\""])
+-            time.sleep(10)  # wait 10s to make it into effect
++            try:
++                subprocess.run(["ssh", remote_addr, "sudo dtrace -w -n \"BEGIN { breakpoint(); }\""], timeout=3)
++            except subprocess.TimeoutExpired:
++                pass
++            # time.sleep(10)  # wait 10s to make it into effect
+             logger.debug("suspend VM")
+ 
+             # launch the debugger to connect kernel and our server.
+@@ -1231,10 +1236,13 @@ def execute(proxy, binary, kext, service, client, index, syscall, isConcolic, ma
+                 proxy.clear()
+ 
+                 # run PoC
+-                if client.access:
+-                    subprocess.run(["ssh", remote_addr, "~/poc"])
+-                else:
+-                    subprocess.run(["ssh", remote_addr, "sudo ~/poc"])
++                try:
++                    if client.access:
++                        subprocess.run(["ssh", remote_addr, "~/poc"], timeout=2)
++                    else:
++                        subprocess.run(["ssh", remote_addr, "sudo ~/poc"], timeout=2)
++                except subprocess.TimeoutExpired:
++                    pass
+                 logger.debug("execute the PoC in guest")
+ 
+             # Set the task so that accessing userspace memory becomes feasible.
+diff --git a/SyzGen/syzgen/debugger/lldbproxy.py b/SyzGen/syzgen/debugger/lldbproxy.py
+index a319b27..e05f0e4 100644
+--- a/SyzGen/syzgen/debugger/lldbproxy.py
++++ b/SyzGen/syzgen/debugger/lldbproxy.py
+@@ -163,42 +163,68 @@ class LLDBDebugger(Thread):
+     def run(self):
+         try:
+             logger.debug("spawn lldb")
+-            lldb = pexpect.spawn("lldb %s" % self.kernel, timeout=30)
++            cmd = "lldb %s" % self.kernel
++            print(cmd)
++            lldb = pexpect.spawn(cmd, timeout=30)
+             lldb.expect("\\(lldb\\)")
+             # lldb.expect("\\(lldb\\)")
+             outs = lldb.before
+-            print(outs)
++            print(outs.decode("latin"))
+ 
+             # For unknown reason, we have to invoke 'script' in advance.
+             lldb.sendline("script")
+             lldb.expect(">>>")
+             outs = lldb.before
+-            print(outs)
++            print(outs.decode("latin"))
+ 
+             lldb.sendline("quit()")
+             lldb.expect("\\(lldb\\)")
+-            print(lldb.before)
++            print(lldb.before.decode("latin"))
+             # lldb.expect("\\(lldb\\)")
+             # print(lldb.before)
+ 
+             lldb.sendline("command script import %s" % os.path.join(os.getcwd(), "debug.py"))
+             lldb.expect("\\(lldb\\)")
+-            print(lldb.before)
++            print(lldb.before.decode("latin"))
+             # lldb.expect("\\(lldb\\)")
+             # print(lldb.before)
+ 
+             ip = getConfigKey("ip")
+             logger.debug("kdp-remote %s" % ip)
+-            lldb.sendline("kdp-remote %s" % ip)
+-            lldb.expect("stopped")
+-            print(lldb.before)
++            lldb.sendline("settings set target.load-script-from-symbol-file true")
++            
++            # Kiprey NOTE: NMI 的方法并不稳定，间隔失效，因此需要在失效时重新触发断点
++            retry = True
++            while retry:
++                # 尝试 attach kernel
++                retry = False
++                try:
++                    lldb.sendline("kdp-remote %s" % ip)
++                    lldb.expect("stopped", timeout=3)
++                except pexpect.TIMEOUT:
++                    retry = True
++                    logger.debug("kdp attach failed, retrying...")
++                    # 如果没 attach 上，则尝试重试
++                    try:
++                        subprocess.run(["ssh", getRemoteAddr(), "sudo dtrace -w -n \"BEGIN { breakpoint(); }\""], timeout=3)
++                    except subprocess.TimeoutExpired:
++                        pass
++                
++            # lldb.sendline("kdp-remote %s" % ip)
++            # lldb.expect("stopped")
++            
++            print(lldb.before.decode("latin"))
+ 
+             logger.debug("proxy -c")
+             lldb.sendline("proxy -c")
+ 
+             while not self.stop:
+                 lldb.expect([pexpect.TIMEOUT, pexpect.EOF], timeout=1)
++            print(lldb.before.decode("latin"))
+             logger.debug("return from proxy -c")
++        except pexpect.TIMEOUT:
++            print(lldb.before.decode("latin"))
++            print("pexpect.TIMEOUT triggered!")
+         finally:
+             lldb.close()
+             lldb.terminate(force=True)
+@@ -245,7 +271,10 @@ def run_debugger(kernel: str):
+     return t, lock
+ 
+ def setup_debugger():
+-    subprocess.run(["ssh", getRemoteAddr(), "sudo dtrace -w -n \"BEGIN { breakpoint(); }\""])
++    try:
++        subprocess.run(["ssh", getRemoteAddr(), "sudo dtrace -w -n \"BEGIN { breakpoint(); }\""], timeout=3)
++    except subprocess.TimeoutExpired:
++            pass
+     # time.sleep(10)  # wait 10s to make it taking effect
+     logger.debug("suspend VM")
+ 
+diff --git a/SyzGen/syzgen/debugger/proxy.py b/SyzGen/syzgen/debugger/proxy.py
+index 218158d..f45b266 100644
+--- a/SyzGen/syzgen/debugger/proxy.py
++++ b/SyzGen/syzgen/debugger/proxy.py
+@@ -18,6 +18,8 @@ def check_error(f):
+         if isinstance(reply, dict):
+             if reply["errcode"] != 0:
+                 raise ProxyException("receive err: %d" % reply["errcode"])
++        if reply == None:
++            raise Exception("Bad reply: None")
+         return reply
+ 
+     return wrapper
+diff --git a/SyzGen/syzgen/parser/generate.py b/SyzGen/syzgen/parser/generate.py
+index a4b3e5d..35efbb5 100644
+--- a/SyzGen/syzgen/parser/generate.py
++++ b/SyzGen/syzgen/parser/generate.py
+@@ -596,7 +596,7 @@ def generateConfig(client):
+         "target": "darwin/amd64",
+         "http": "127.0.0.1:56741",
+         "workdir": os.path.join(getConfigKey("syzkaller"), "workdir"),
+-        "sshkey": "/Users/CwT/.ssh/id_rsa",
++        "sshkey": "/Users/test/.ssh/id_rsa",
+         "ssh_user": getConfigKey("user") if client.access else "root",
+         "syzkaller": getConfigKey("syzkaller"),
+         "reproduce": False,
+diff --git a/TODO_list.md b/TODO_list.md
+new file mode 100644
+index 0000000..0867525
+--- /dev/null
++++ b/TODO_list.md
+@@ -0,0 +1,150 @@
++# Syzgen
++
++## bug
++
++- race condition in Proxy && debugger (may not)
++- ssh operatin may stuck as kernel breakpoints hit.
++- lldb script too many bugs (add load kernel.kSYM python script)
++- ida python script version 7.2 -> 7.5+
++- bad entitlement signed in poc
++- unstable NMI trigger method
++- kext cannot log messages because of UUID
++
++## notes
++
++- vm conditions
++  - one CPU core
++  - support kernel debugging
++  - support load kext
++
++- lldb command to load showallkexts
++  - in shell
++
++    ```shell
++    defaults write com.apple.dt.lldb DefaultPythonVersion 2
++    ```
++
++  - in lldb
++
++    ```
++    settings set target.load-script-from-symbol-file true
++    ```
++
++- Test kernel debugging 
++  - ssh test@192.168.161.145 'sudo dtrace -w -n "BEGIN { breakpoint(); }"'
++  - lldb --one-line "kdp-remote 192.168.161.145"
++
++- log inspect
++
++  ```bash
++  log show --predicate 'processID == 0' --last 1h
++  ```
++
++- ssh 临时端口转发
++  
++  ```bash
++  echo "rdr pass inet proto tcp from any to any port 10022 -> 127.0.0.1 port 22" | sudo pfctl -ef -
++  ```
++
++- [ida Porting from IDAPython 6.x-7.3, to 7.4 - Hex Rays](https://hex-rays.com/products/ida/support/ida74_idapython_no_bc695_porting_guide.shtml)
++  
++- create ISO from dmg
++  
++  ```bash
++  hdiutil create -o /tmp/Catalina -size 8500m -volname Catalina -layout SPUD -fs HFS+J
++  hdiutil attach /tmp/Catalina.dmg -noverify -mountpoint /Volumes/Catalina
++  sudo /Applications/Install\ macOS\ Catalina.app/Contents/Resources/createinstallmedia --volume /Volumes/Catalina --nointeraction
++  hdiutil detach /volumes/Install\ macOS\ Catalina
++  hdiutil convert /tmp/Catalina.dmg -format UDTO -o /tmp/Catalina.cdr
++  ```
++
++- change xcode development path:
++  
++  ```shell
++  xcode-select -p
++  sudo xcode-select -s /Library/Developer/CommandLineTools
++  # /Library/Developer/CommandLineTools
++  # /Applications/Xcode11.app/Contents/Developer (10.15)
++  # /Applications/Xcode.app/Contents/Developer (11.0, default)
++  ```
++
++- 内核调试
++  
++  ```shell
++  # 启动内核命令
++  (lldb) settings set target.load-script-from-symbol-file true
++  # 查看当前内核 image 的编译信息等，获取到内核编译的状态，例如源代码
++  (lldb) image lookup --verbose --address kernel_bootstrap
++      Address: kernel.development[0xffffff80004234f0] (kernel.development.__TEXT.__text + 627952)
++      Summary: kernel.development`kernel_bootstrap at startup.c:260
++       Module: file = "/System/Volumes/Data/Library/Developer/KDKs/KDK_10.15.7_19H15.kdk/System/Library/Kernels/kernel.development", arch = "x86_64"
++  CompileUnit: id = {0x00000057}, file = "/AppleInternal/BuildRoot/Library/Caches/com.apple.xbs/Sources/xnu/xnu-6153.141.2.2/osfmk/kern/startup.c", language = "c99"
++     Function: id = {0x7fffffff00219bf4}, name = "kernel_bootstrap", range = [0xffffff8017c234f0-0xffffff8017c23ab3)
++     FuncType: id = {0x7fffffff00219bf4}, byte-size = 0, decl = startup.c:259, compiler_type = "void (void)"
++       Blocks: id = {0x7fffffff00219bf4}, range = [0xffffff8017c234f0-0xffffff8017c23ab3)
++    LineEntry: [0xffffff8017c234f0-0xffffff8017c234fb): /AppleInternal/BuildRoot/Library/Caches/com.apple.xbs/Sources/xnu/xnu-6153.141.2.2/osfmk/kern/startup.c:260
++       Symbol: id = {0x00006bea}, range = [0xffffff8017c234f0-0xffffff8017c23ac0), name="kernel_bootstrap"
++     Variable: id = {0x7fffffff00219c0a}, name = "namep", type = "char [16]", location = DW_OP_fbreg(-48), decl = startup.c:263
++
++  # 之后加载内核源码
++
++  (lldb) settings set target.source-map /AppleInternal/BuildRoot/Library/Caches/com.apple.xbs/Sources/xnu/xnu-6153.141.2.2 /Users/test/Desktop/xnu-6153.141.1
++
++  (lldb) p bundleID->string
++  (char *const) $3 = 0xffffff8023169b20 "com.wchen.hook"
++  ```
++
++- [macOS Debug boot-arg](https://gist.github.com/knightsc/619abdf9ca62602351b3aa2cce1b0704)
++
++  > *OS interanl vol I: Section 4.15
++  
++  ```cpp
++  /* Debug boot-args */
++  #define DB_HALT		0x1
++  //#define DB_PRT          	0x2 -- obsolete
++  #define DB_NMI			0x4
++  #define DB_KPRT		0x8
++  #define DB_KDB			0x10
++  #define DB_ARP          	0x40
++  #define DB_KDP_BP_DIS   	0x80
++  //#define DB_LOG_PI_SCRN  	0x100 -- obsolete
++  #define DB_KDP_GETC_ENA 	0x200
++
++  #define DB_KERN_DUMP_ON_PANIC	0x400  /* Trigger core dump on panic*/
++  #define DB_KERN_DUMP_ON_NMI	0x800  /* Trigger core dump on NMI */
++  #define DB_DBG_POST_CORE	0x1000 /* Wait in debugger after NMI core */
++  #define DB_PANICLOG_DUMP	0x2000 /* Send paniclog on panic,not core */
++  #define DB_REBOOT_POST_CORE	0x4000 /* Attempt to reboot after
++					* post-panic crashdump/paniclog
++					* dump.
++					*/
++  #define DB_NMI_BTN_ENA  	0x8000  /* Enable button to directly trigger NMI */
++  #define DB_PRT_KDEBUG   	0x10000 /* kprintf KDEBUG traces */
++  #define DB_DISABLE_LOCAL_CORE  0x20000 /* ignore local kernel core dump support */
++  #define DB_DISABLE_GZIP_CORE   0x40000 /* don't gzip kernel core dumps */
++  ```
++
++  debug=0x146 = 
++    DB_LOG_PI_SCRN(nouse, 0x100, Disable the graphical panic screen) +
++    DB_ARP(0x40, allow debugger use ARP) +
++    DB_NMI(0x4, enable kernel debugging facility) + 
++    DB_PRT(nouse, 0x2, send kernel printf output to console)
++
++  IOLog(...)
++  os_log(OS_DEFAULT_LOG, ...) <os/log.h>
++  printf(...) 
++
++  use `sudo dmesg` to read printf messages.
+diff --git a/kcov/scripts/ida_cov.py b/kcov/scripts/ida_cov.py
+index 0d5f0e3..7fba25e 100644
+--- a/kcov/scripts/ida_cov.py
++++ b/kcov/scripts/ida_cov.py
+@@ -1,7 +1,7 @@
+-
+ from idautils import *
+ from idaapi import *
+ from idc import *
++from ida_pro import *
+ 
+ import json
+ 
+@@ -12,9 +12,9 @@ image_base = idaapi.get_imagebase()
+ def getBlocks(start, end):
+     ret = []
+     for block in idaapi.FlowChart(idaapi.get_func(funcea)):
+-        if start <= block.startEA < end and is_code(getFlags(block.startEA)):
++        if start <= block.start_ea < end and is_code(get_full_flags(block.start_ea)):
+             # print(hex(block.startEA))
+-            ret.append(block.startEA)
++            ret.append(block.start_ea)
+     return ret
+ 
+ uncover = []
+@@ -27,17 +27,17 @@ for i in range(len(funcs)-1):
+     uncover += getBlocks(funcea, funcs[i+1])
+ 
+ # print("func at 0x%x" % funcs[-1])
+-uncover += getBlocks(funcs[-1], idc.SegEnd(funcs[-1]))
++uncover += getBlocks(funcs[-1], idc.get_segm_end(funcs[-1]))
+ 
+-info = []
+-info.append({
++info = {
+     "uncover": uncover,
+     "cover": [],
+     "kext": "",
+     "binary": ""
+-})
++}
+ 
+ with open("cov.json", "w") as fp:
+-    json.dump({"info": info}, fp)
++    json.dump(info, fp)
++    # json.dump({"info": info}, fp)
+ 
+-Exit(0)
+\ No newline at end of file
++qexit(0)
+\ No newline at end of file
+diff --git a/kcov/scripts/ida_cov_wrap.py b/kcov/scripts/ida_cov_wrap.py
+index 07ebbc2..0a10f50 100644
+--- a/kcov/scripts/ida_cov_wrap.py
++++ b/kcov/scripts/ida_cov_wrap.py
+@@ -1,19 +1,65 @@
+ 
+ import os
+ import argparse
++import shutil
++import json
++import biplist # plist library
+ import subprocess
+ 
+-IDA64 = "C:\\Program Files\\IDA 7.2\\idat64.exe"
++IDA64 = "D:\software\CrackingTools\[P.Y.G]IDA_Pro_7.5_SP3\ida64.exe"
++
++def run(kextpath):
++    if not kextpath.endswith(".kext"):
++        print("skip %s" % kextpath)
++        return
++    contents_path = os.path.join(kextpath, "Contents")
++    macos_path = os.path.join(contents_path, "MacOS")
++    try:
++        bins = os.listdir(macos_path)
++    except FileNotFoundError:
++        return
++    assert len(bins) == 1
++    filepath = os.path.join(macos_path, bins[0])
+ 
+-def run(filepath):
+     script = os.path.join(os.getcwd(), "scripts", "ida_cov.py")
++    print(filepath)
+     subprocess.run([IDA64, "-A", "-S\"%s\"" % script, filepath, "-t"], check=True)
+-    # cov = os.path.join(os.path.dirname(filepath), "cov.json")
+-    # dst = os.path.join("workdir", "cc", f)
+-    # os.replace(cov, "cov.json")
++
++    # read generated json
++    src = os.path.join(macos_path, "cov.json")
++    with open(src, "r") as f:
++        json_content = json.load(f)
++    os.remove(src)
++    os.remove(filepath+".i64")
++
++    # set some fields
++    json_content["binary"] = kextpath
++
++    plist = biplist.readPlist(os.path.join(contents_path, "Info.plist"))
++    json_content["kext"] = plist["CFBundleIdentifier"]
++
++    # save json
++    dst = os.path.join("workdir", os.path.basename(kextpath)+".json")
++    
++    dst_dir = os.path.dirname(dst)
++    if not os.path.exists(dst_dir):
++        os.mkdir(dst_dir)
++        
++    with open(dst, "w") as f:
++        json.dump(json_content, f)
+ 
+ if __name__ == "__main__":
+     parser = argparse.ArgumentParser(prog="main")
+-    parser.add_argument("--path", help="path to the binary")
++    parser.add_argument("--path", help="path to the kext")
++    parser.add_argument("--folder", help="path to the kexts")
+     args = parser.parse_args()
+-    run(args.path)
++
++    if args.path:
++        print("run")
++        run(args.path)
++    elif args.folder:
++        print("group_run")
++        fileAll = os.listdir(args.folder)
++        for file in fileAll:
++            absolutePath = os.path.join(args.folder, file)
++            run(absolutePath)
