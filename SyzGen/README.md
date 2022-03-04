@@ -237,7 +237,15 @@ kcov 的局限性在于**一个 kcov 只能检测一个 driver 的覆盖率，�
    qexit(0)
    ```
 
-3. 之后待生成出 `cov.json` 后，运行 `SyzGen_setup\kcov\scripts\gen_cov.py` 以生成 `kcov` 文件。
+3. 之后待生成出 `cov.json` 后，**注意，一定要打开该文件并手动对 json 文件中的 kext 字段进行填写，将当前 driver 的 bundle ID 写入至 `kext` 字段中**。例如：
+
+   ```json
+   {"uncover": [1764, 1814, ..., 84434], "cover": [], "kext": "com.apple.iokit.IONetworkingFamily", "binary": "IONetworkingFamily.kext"}
+   ```
+   
+   kcov.kext 会使用到这个 bundle ID 来找到待跟踪的驱动基地址，因此 cov.json 中的 kext 字段相当的重要！
+   
+4. 最后，运行 `SyzGen_setup\kcov\scripts\gen_cov.py` 以生成 `kcov` 文件。
 
    ```shell
    python gen_cov.py -o kcov cov.json
