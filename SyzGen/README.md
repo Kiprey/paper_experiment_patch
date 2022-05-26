@@ -878,7 +878,22 @@ index f97b6da..02d4c2c 100644
    python scripts/ida.py --dir /path/to/all/kexts
    ```
    
-   注意该步骤只能在 IDA 7.4 及以下版本运行。生成的函数签名要放置在 `workdir/cc/<kextname>.json` 中。
+   注意：
+     1. 该步骤只能在 IDA 7.4 及以下版本运行。生成的函数签名要放置在 `workdir/cc/<kextname>.json` 中。
+     2. 脚本实际执行的命令行为：
+        
+        ```bash
+        "D:\software\CrackingTools\52pojie_Tools\Tools\Disassemblers\IDA 7.0\ida64.exe"
+            -A
+            -S"C:\Users\Kipre
+y\Desktop\macos\对比试验\scripts\ida_getcc.py" 
+            "C:\Users\Kiprey\Desktop\macos\对比试验\experiment\EndpointSecurity.kext\Contents\MacOS\E
+ndpointSecurity" 
+             -t
+        ```
+        
+        其中，`-A` 表示忽略所有对话框。当调试该命令时可以将 -A 去除，以获取报错信息；`-S` 指定运行的 idapy 路径；`-t` 指定创建空的数据库文件。
+        要求 idapy 和目标程序的路径，**都不包含中文字符**！
 
    最后跑 main.py 以完成剩余工作：
 
