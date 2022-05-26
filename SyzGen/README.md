@@ -879,7 +879,7 @@ index f97b6da..02d4c2c 100644
    ```
    
    注意：
-     1. 该步骤只能在 IDA 7.4 及以下版本运行。生成的函数签名要放置在 `workdir/cc/<kextname>.json` 中。
+     1. 该步骤只能在 IDA 7.4 及以下版本运行。生成的函数签名要放置在 `workdir/cc/<kextname>` 中（没有后缀 .json）。
      2. 脚本实际执行的命令行为：
         
         ```bash
