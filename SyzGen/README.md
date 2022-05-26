@@ -877,6 +877,8 @@ index f97b6da..02d4c2c 100644
    ```shell
    python scripts/ida.py --dir /path/to/all/kexts
    ```
+   
+   注意该步骤只能在 IDA 7.4 及以下版本运行。生成的函数签名要放置在 `workdir/cc/<kextname>.json` 中。
 
    最后跑 main.py 以完成剩余工作：
 
